@@ -1,0 +1,142 @@
+
+## EKSCTL 설치
+# for ARM systems, set ARCH to: `arm64`, `armv6` or `armv7`
+ARCH=amd64
+PLATFORM=$(uname -s)_$ARCH
+
+curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz"
+
+tar -xzf eksctl_$PLATFORM.tar.gz -C /tmp && rm eksctl_$PLATFORM.tar.gz
+
+sudo mv /tmp/eksctl /usr/local/bin
+
+eksctl
+
+
+## IAM 역할 생성
+# clusgter-trust-policy.json 생성
+nano cluster-trust-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "eks.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+# Policy 활용하여 Role 생성
+aws iam create-role \
+  --role-name eksClusterRole \
+  --assume-role-policy-document file://"cluster-trust-policy.json"
+
+# IAM 정책에 연결
+aws iam attach-role-policy \
+  --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy \
+  --role-name eksClusterRole
+
+# 노드용 IAM 역할 생성
+cat >node-role-trust-relationship.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+
+#IAM 역할 생성
+aws iam create-role \
+  --role-name AmazonEKSNodeRole \
+  --assume-role-policy-document file://"node-role-trust-relationship.json"
+
+#필요한 3개의 관리형 IAM 정책을 IAM 역할에 연결
+# 워커노드 정책
+aws iam attach-role-policy \
+  --policy-arn arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy \
+  --role-name AmazonEKSNodeRole
+
+# 컨테이너 레지스스트리 읽기정책
+aws iam attach-role-policy \
+  --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly \
+  --role-name AmazonEKSNodeRole
+
+# IPv4 CNI 정책도 마찬가지로 연결
+aws iam attach-role-policy \
+  --policy-arn arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy \
+  --role-name AmazonEKSNodeRole
+
+#AWS S3 URL
+https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/amazon-eks-vpc-private-subnets.yaml
+
+# 키 생성
+ssh-keygen -t rsa -f aws_rsa -C 
+
+# EKS 클러스터 생성
+eksctl create cluster \
+--name my-eks \
+--region ap-northeast-2 \
+--version 1.28 \
+--node-type t3.medium \
+--nodes-min 2 \
+--nodes 3 \
+--nodes-max 4 \
+--ssh-access \
+--ssh-public-key aws_rsa.pub \
+--vpc-public-subnets 첫번째서브넷이름,두번째서브넷이름 \
+--vpc-private-subnets 세번째서브넷이름,네번째서브넷이름 
+
+# kubectl 설치
+curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.28.2/2023-10-17/bin/linux/amd64/kubectl
+
+chmod +x ./kubectl
+
+mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$HOME/bin:$PATH
+
+echo 'export PATH=$HOME/bin:$PATH' >> ~/.bashrc
+
+# client 버전 확인
+kubectl version --client
+
+# region, cluster 이름 설정
+aws eks update-kubeconfig --region ap-northeast-2 --name my-eks
+
+# client 버전 확인
+kubectl version --client
+
+# 기본적인 kubectl 명령어 입력
+# 노드 확인
+kubectl get nodes
+
+# 노드 자세히 보기
+kubectl get nodes -o wide
+
+# 네임스페이스 확인
+kubectl get namespaces
+
+# 전체 네임스페이스의 Pod 확인
+kubectl get pod -A
+
+# 전체 오브젝트 확인
+kubectl get all -A
+
+# svc 더 자세히 보기
+kubectl describe svc -n kube-system kube-dns
+
+# API 서버 주소 확인
+kubectl cluster-info
+
+# 마스터 노드에 있는 인증 정보들
+cat $HOME/.kube/config
+
+# 인증 파일을 읽었는지 확인
+kubectl get pods -v9
