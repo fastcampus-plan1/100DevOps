@@ -1,0 +1,195 @@
+## 노드 접속
+$ kubectl get node -o wide
+
+## 터미널 한개 더 띄우고, 인증서 가지고 External-IP로 접속, ec2-user로 접속
+$ ssh -i aws_rsa ec2-user@블라블라
+
+## (워커노드) 리눅스 인터페이스 확인
+$ ip a
+[ec2-user@ip-192-168-106-84 ~]$ ip a
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 qdisc mq state UP group default qlen 1000
+    link/ether 06:71:d6:86:84:5e brd ff:ff:ff:ff:ff:ff
+    inet 192.168.106.84/18 brd 192.168.127.255 scope global dynamic eth0
+       valid_lft 2830sec preferred_lft 2830sec
+    inet6 fe80::471:d6ff:fe86:845e/64 scope link 
+       valid_lft forever preferred_lft forever 
+# pod가 없는 경우 eth0 까지만 생성됨(pod가 생기면 eth1도 생성, AWS CNI의 특징)
+
+## (클라우드쉘) Pod 생성
+$ nano multi-container.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pd
+spec:
+  containers:
+  - image: redis
+    name: test-container
+    volumeMounts:
+    - mountPath: /cache
+      name: cache-volume
+  - image : nginx
+    name: side-car
+    volumeMounts:
+    - mountPath: /cache
+      name: cache-volume
+  volumes:
+  - name: cache-volume
+    emptyDir: {}
+
+## (클라우드쉘) pod 생성
+$ kubectl apply -f multi-container.yaml
+
+## (클라우드쉘) 생성된 파드의 인터페이스 확인
+$ kubectl get pod -o wide
+
+## (클라우드쉘-첫번째 컨테이너 접속)
+root@master-1:~# kubectl exec -it test-pd -- /bin/bash
+Defaulted container "test-container" out of: test-container, side-car
+root@test-pd:/data# apt update
+root@test-pd:/data# apt install iproute2 -y
+root@test-pd:/data# ip a
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+3: eth0@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 qdisc noqueue state UP group default 
+    link/ether 86:8f:56:21:c8:3a brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 192.168.104.9/32 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::848f:56ff:fe21:c83a/64 scope link 
+       valid_lft forever preferred_lft forever
+
+root@test-pd:/data# exit
+
+## 두번째 컨테이너 접속
+root@master-1:~# kubectl exec -it test-pd -c side-car -- /bin/bash
+root@test-pd:/# apt update
+root@test-pd:/# apt install iproute2 -y
+root@test-pd:/# ip a
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+3: eth0@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 qdisc noqueue state UP group default 
+    link/ether 86:8f:56:21:c8:3a brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 192.168.104.9/32 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::848f:56ff:fe21:c83a/64 scope link 
+       valid_lft forever preferred_lft forever
+
+# 같은 Pod 내라면 컨테이너는 달라져도 IP가 같음
+
+
+## (노드 접속된 터미널 이동) 이번에는 Pod가 생성되어 있는 Node에 접속, 확인
+[root@ip-192-168-106-84 ~]# ip -d a
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00 promiscuity 0 minmtu 0 maxmtu 0 numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 qdisc mq state UP group default qlen 1000
+    link/ether 06:71:d6:86:84:5e brd ff:ff:ff:ff:ff:ff promiscuity 0 minmtu 128 maxmtu 9216 numtxqueues 2 numrxqueues 2 gso_max_size 65536 gso_max_segs 65535 
+    inet 192.168.106.84/18 brd 192.168.127.255 scope global dynamic eth0
+       valid_lft 3565sec preferred_lft 3565sec
+    inet6 fe80::471:d6ff:fe86:845e/64 scope link 
+       valid_lft forever preferred_lft forever
+3: eni98505e98801@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 qdisc noqueue state UP group default 
+    link/ether 1a:c2:07:8e:06:b8 brd ff:ff:ff:ff:ff:ff link-netns cni-6462b195-9b3e-0d4c-49a4-a094a006e68a promiscuity 0 minmtu 68 maxmtu 65535 
+    veth numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 
+    inet6 fe80::18c2:7ff:fe8e:6b8/64 scope link 
+       valid_lft forever preferred_lft forever
+4: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 qdisc mq state UP group default qlen 1000
+    link/ether 06:3e:22:73:a9:9c brd ff:ff:ff:ff:ff:ff promiscuity 0 minmtu 128 maxmtu 9216 numtxqueues 2 numrxqueues 2 gso_max_size 65536 gso_max_segs 65535 
+    inet 192.168.95.75/18 brd 192.168.127.255 scope global eth1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::43e:22ff:fe73:a99c/64 scope link 
+       valid_lft forever preferred_lft forever
+# 어떤 파드와 어떤 인터페이스로, 어떠한 디바이스 형태로 연결되어 있는지 확인 가능
+
+## (노드) 구동 되어 있는 Pod 확인하여 PID 확인
+[root@ip-192-168-106-84 ~]# ps -ef | grep redis | grep -v grep
+chrony      5025    4904  0 07:56 ?        00:00:02 redis-server *:6379
+[root@ip-192-168-106-84 ~]# ps -ef | grep nginx | grep -v grep
+root        5138    4904  0 07:56 ?        00:00:00 nginx: master process nginx -g daemon off;
+101         5172    5138  0 07:56 ?        00:00:00 nginx: worker process
+101         5173    5138  0 07:56 ?        00:00:00 nginx: worker process
+
+## (노드) 네임스페이스 확인
+[root@ip-192-168-106-84 ~]# lsns -p 5025
+        NS TYPE   NPROCS   PID USER   COMMAND
+4026531835 cgroup    113     1 root   /usr/lib/systemd/systemd --switched-root --system --deserialize 21
+4026531837 user      113     1 root   /usr/lib/systemd/systemd --switched-root --system --deserialize 21
+4026532194 net         5  4925 65535  /pause
+4026532278 uts         5  4925 65535  /pause
+4026532279 ipc         5  4925 65535  /pause
+4026532310 mnt         1  5025 chrony redis-server *:6379
+4026532311 pid         1  5025 chrony redis-server *:6379
+
+
+[root@ip-192-168-106-84 ~]# lsns -p 5138
+        NS TYPE   NPROCS   PID USER  COMMAND
+4026531835 cgroup    113     1 root  /usr/lib/systemd/systemd --switched-root --system --deserialize 21
+4026531837 user      113     1 root  /usr/lib/systemd/systemd --switched-root --system --deserialize 21
+4026532194 net         5  4925 65535 /pause
+4026532278 uts         5  4925 65535 /pause
+4026532279 ipc         5  4925 65535 /pause
+4026532312 mnt         3  5138 root  nginx: master process nginx -g daemon off;
+4026532313 pid         3  5138 root  nginx: master process nginx -g daemon off;
+
+# 동일한 namespace를 가지고 있고, COMMAND가 동일한 Pause PID로 확인
+[root@ip-192-168-106-84 ~]# lsns -p 4925
+        NS TYPE   NPROCS   PID USER  COMMAND
+4026531835 cgroup    112     1 root  /usr/lib/systemd/systemd --switched-root --system --deserialize 21
+4026531837 user      112     1 root  /usr/lib/systemd/systemd --switched-root --system --deserialize 21
+4026532194 net         5  4925 65535 /pause
+4026532277 mnt         1  4925 65535 /pause
+4026532278 uts         5  4925 65535 /pause
+4026532279 ipc         5  4925 65535 /pause
+4026532280 pid         1  4925 65535 /pause
+# Pause 컨테이너가 network namespace를 동일하게 가지고 있는 것을 확인
+
+
+## AWS에서는 CRI로 도커 대신 containerd를 활용함. ctr 명령어로 컨테이너 확인
+[root@ip-192-168-106-84 ~]# ctr namespaces list
+NAME   LABELS 
+k8s.io        
+
+[root@ip-192-168-106-84 ~]# ctr -n k8s.io container list
+CONTAINER                                                           IMAGE                                                                                                  RUNTIME                  
+0385727b15250f60a5ebb3bef4d88949f58376620c53c1c83c1508159bf6b5e0    docker.io/library/nginx:latest                                                                         io.containerd.runc.v2    
+29d98b13a49b16c0ac02abd9bfb9c53323ad509b16b1e1b1fbaca2f926c3370a    602401143452.dkr.ecr.ap-northeast-2.amazonaws.com/amazon/aws-network-policy-agent:v1.0.2-eksbuild.1    io.containerd.runc.v2    
+3dbf1df130f978596f439a9b2801485066b3e414e12d22405cee1b2ed3945e36    066635153087.dkr.ecr.il-central-1.amazonaws.com/eks/pause:3.5                                          io.containerd.runc.v2    
+6ea69c8f09e3e81d097bfcd849c03b872cff5e9d68b16c8d1818555843622eeb    066635153087.dkr.ecr.il-central-1.amazonaws.com/amazon-k8s-cni:v1.14.1                                 io.containerd.runc.v2    
+74d8c508235aaec919e1b7f0c264526212b2d737828b825470d94fa4cf6b3b36    066635153087.dkr.ecr.il-central-1.amazonaws.com/eks/pause:3.5                                          io.containerd.runc.v2    
+83aa0a547358e56e0ec233cbcf903e0458189cd652994b498a40fc9fe42c2b2f    docker.io/library/redis:latest                                                                         io.containerd.runc.v2    
+90147dbfd13b78c33c621f029bef72209e4393e7f39d6e39f3576f5a794c4bfc    066635153087.dkr.ecr.il-central-1.amazonaws.com/amazon-k8s-cni-init:v1.14.1                            io.containerd.runc.v2    
+e2e09c9cd677e8291cefd7b172f2a12545db7a4fd6d5f10b3137dd4426e83529    066635153087.dkr.ecr.il-central-1.amazonaws.com/eks/pause:3.5                                          io.containerd.runc.v2    
+f69d2ca3328d146bc7d82a8f296e99cd8c58e32af403ea42052c40d76e603c79    066635153087.dkr.ecr.il-central-1.amazonaws.com/eks/kube-proxy:v1.28.1-minimal-eksbuild.1              io.containerd.runc.v2
+
+[root@ip-192-168-106-84 ~]# ctr -n k8s.io container info 3dbf1df130f978596f439a9b2801485066b3e414e12d22405cee1b2ed3945e36 | grep kubernetes.pod.name
+        "io.kubernetes.pod.name": "test-pd",
+        "io.kubernetes.pod.namespace": "default",
+
+# test-pd 내에 pause container가 포함됨을 확인
+
+
+## pause 컨테이너의 CNI Path 확인
+# 같은 명령어에서 CNI path만 확인 (pause 컨테이너)
+[root@ip-192-168-106-84 ~]# ctr -n k8s.io container info 3dbf1df130f978596f439a9b2801485066b3e414e12d22405cee1b2ed3945e36 | grep cni
+                    "path": "/var/run/netns/cni-6462b195-9b3e-0d4c-49a4-a094a006e68a"
+
+# 아까 봤었던 노드의 인터페이스 다시 확인 (노드에서 보는 컨테이너 인터페이스)
+[root@ip-192-168-106-84 ~]# ip a | grep cni
+    link/ether 1a:c2:07:8e:06:b8 brd ff:ff:ff:ff:ff:ff link-netns cni-6462b195-9b3e-0d4c-49a4-a094a006e68a
