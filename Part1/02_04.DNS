@@ -1,0 +1,208 @@
+# CoreDNS 구동 확인
+$ kubectl get pod -n kube-system
+
+$ kubectl get svc -n kube-system
+NAME       TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)         AGE
+kube-dns   ClusterIP   10.100.0.10   <none>        53/UDP,53/TCP   4h26m
+
+### 서비스와 DNS
+## 서비스 생성 및 접속
+# Expose : 서비스 생성과 연결을 함께
+$ wget https://raw.githubusercontent.com/kubernetes/website/main/content/ko/examples/service/networking/run-my-nginx.yaml
+$ cp run-my-nginx.yaml run-my-nginx-clusterip.yaml
+$ cp run-my-nginx.yaml run-my-nginx-nodeport.yaml
+$ cp run-my-nginx.yaml run-my-nginx-loadbalancer.yaml
+$ nano run-my-nginx-clusterip.yaml
+$ nano run-my-nginx-nodeport.yaml
+$ nano run-my-nginx-loadbalancer.yaml
+
+# nano로 연 이후 변경할 사항은
+# run-my-nginx-clusterip.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-nginx-clusterip ## 이름만 변경
+spec:
+  selector:
+    matchLabels:
+      run: my-nginx-clusterip  ## 이름만 변경
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        run: my-nginx-clusterip ## 이름만 변경
+    spec:
+      containers:
+      - name: my-nginx-clusterip ## 이름만 변경
+        image: nginx
+        ports:
+        - containerPort: 80
+
+# run-my-nginx-nodeport.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-nginx-nodeport ## 이름만 변경
+spec:
+  selector:
+    matchLabels:
+      run: my-nginx-nodeport ## 이름만 변경
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        run: my-nginx-nodeport ## 이름만 변경
+    spec:
+      containers:
+      - name: my-nginx-nodeport ## 이름만 변경
+        image: nginx
+        ports:
+        - containerPort: 80
+
+# run-my-nginx-loadbalancer.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-nginx-lb ## 이름만 변경
+spec:
+  selector:
+    matchLabels:
+      run: my-nginx-lb  ## 이름만 변경
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        run: my-nginx-lb ## 이름만 변경
+    spec:
+      containers:
+      - name: my-nginx-lb ## 이름만 변경
+        image: nginx
+        ports:
+        - containerPort: 80
+
+# deployment 생성
+$ kubectl apply -f run-my-nginx-clusterip.yaml
+$ kubectl apply -f run-my-nginx-nodeport.yaml
+$ kubectl apply -f run-my-nginx-loadbalancer.yaml
+
+# expose로 서비스 생성 및 연결. clusterip는 기본값이므로 별도 설정 없으며, nodeport는 노드포트 번호 등을 적어줘야 함
+$ kubectl expose deployment my-nginx-clusterip
+$ kubectl expose deployment my-nginx-nodeport --type="NodePort" --port 80 --target-port=80
+$ kubectl expose deployment my-nginx-lb --type="LoadBalancer" --port 80 --target-port=80
+
+# 확인
+$ kubectl describe svc my-nginx-clusterip
+$ kubectl describe svc my-nginx-nodeport
+$ kubectl describe svc my-nginx-lb
+
+# 각 deployment마다 2개의 파드가 떴으므로, 들어가서 구분해 주기
+$ kubectl get pod
+$ kubectl exec -it 클러스터ip1번파드이름 -- bash -c "echo clusterip_1 > /usr/share/nginx/html/index.html"
+$ kubectl exec -it 클러스터ip2번파드이름 -- bash -c "echo clusterip_2 > /usr/share/nginx/html/index.html"
+$ kubectl exec -it 노드포트1번파드이름 -- bash -c "echo nodeport_1 > /usr/share/nginx/html/index.html"
+$ kubectl exec -it 노드포트2번파드이름 -- bash -c "echo nodeport_2 > /usr/share/nginx/html/index.html"
+$ kubectl exec -it 로드밸런서1번파드이름 -- bash -c "echo lb_1 > /usr/share/nginx/html/index.html"
+$ kubectl exec -it 로드밸런서2번파드이름 -- bash -c "echo lb_2 > /usr/share/nginx/html/index.html"
+
+## 접속 확인
+# 클러스터 밖에서 확인 : PC(윈도우, 맥북)에서 브라우저 열고 확인
+	# ClusterIP : 접속접속불가
+  # NodePort : 어떤 노드 IP든 관계없음
+  # 로드밸런서 : svc 확인해보면 external ip 별도 존재
+http://AWS에서 할당받은 공인IP #이건안됨
+http://AWS에서 할당받은 공인IP:할당받은노드포트 #이건 접속 가능
+http://EXTERNAL-IP 주소 입력 #이건 접속 가능
+# 접속 안되면 AWS 방화벽 확인
+
+
+# 클러스터 내에서 확인(cloudshell은 클러스터가 아니므로 노드로 접속)
+$ kubectl get svc
+$ curl (my-nginx-clusterip의 ip)
+$ curl (my-nginx-nodeport의 ip)
+$ curl (my-nginx-lb의 ip)
+
+# 워커노드에서 이건 안될것임
+$ curl my-nginx-clusterip
+$ curl my-nginx-nodeport
+$ curl my-nginx-lb
+
+# 왜냐하면.. (워커노드의 아래 파일 확인)
+$ cat /etc/resolv.conf
+
+
+### Pod 내에서 DNS 질의
+##컨테이너 내에서 확인
+$ kubectl exec -it test-pd -- /bin/bash
+$ apt update
+$ apt install curl dnsutils -y
+
+# 파드내에서는 서비스 이름으로 웹페이지 접속이 가능
+$ curl my-nginx-clusterip
+$ curl my-nginx-nodeport
+$ curl my-nginx-lb
+
+$ cat /etc/resolv.conf
+
+#아래와 같이 search에 있는 것들은 아래 사항들을 포함해서 DNS서버에 호출한다는 뜻임
+#search default.svc.cluster.local svc.cluster.local cluster.local ap-northeast-2.compute.internal
+
+#즉, nslookup my-nginx-nodeport라고 입력시 첫번째 search의 my-nginx-nodeport.default.svc.cluster.local도 찾아서 FQDN을 모두 보여주게 됨
+
+$ nslookup my-nginx-nodeport
+Server:		10.96.0.10
+Address:	10.96.0.10#53
+
+Name:	my-nginx-nodeport.default.svc.cluster.local
+Address: 10.99.167.38
+
+$ nslookup my-nginx-clusterip
+$ nslookup my-nginx-lb
+$ nslookup kubernetes
+
+# (참고) 같은 네임 스페이스 였기에 이름만으로도 가능했음
+
+
+## Pod 내에서 어떻게 DNS 주소를 알고 설정했는지 확인
+# 워커노드에서 실행
+# kubelet이 config파일 참고하여 pod의 resolv.conf에 넣어준다.
+$ ps -ef | grep kubelet
+$ cat /etc/kubernetes/kubelet/kubelet-config.json | grep -A2 DNS
+  "clusterDNS": [
+    "10.100.0.10"
+  ],
+
+$ kubectl get svc -n kube-system
+NAME       TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)         AGE
+kube-dns   ClusterIP   10.100.0.10   <none>        53/UDP,53/TCP   4h26m
+
+
+### Service : External Name
+#- 서비스가 내부 IP(A레코드)가 아니라, 외부 도메인(CNAME 레코드)를 응답하게 설정
+#- 쿠버네티스에서 (도메인가 자주 바뀌는) 외부 시스템과 연동 시 유용하게 사용 가능
+
+$ cat <<EOT> svc-externalname.yaml
+apiVersion: v1
+kind: Service
+metadata:
+ name: illegal-cartoon
+spec:
+ type: ExternalName
+ externalName: k8s.io
+EOT
+
+$ kubectl apply -f svc-externalname.yaml
+
+$ kubectl get svc
+$ kubectl describe svc illegal-cartoon
+
+$ kubectl exec -it test-pd -- /bin/bash
+nslookup illegal-cartoon
+
+
+## 원복
+kubectl get deployment
+kubectl get svc
+kubectl delete deployment my-nginx-nodeport my-nginx-lb my-nginx-clusterip
+kubectl delete svc my-nginx-nodeport my-nginx-lb my-nginx-clusterip illega-cartoon
+kubectl get deployment
+kubectl get svc
