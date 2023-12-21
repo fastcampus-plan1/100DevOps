@@ -1,0 +1,58 @@
+# Deployment 생성 및 확인
+kubectl create deployment nginx-deployment --replicas=3 --image=nginx --dry-run=client -o yaml > 3-nginx-deploy.yaml
+cat 3-nginx-deploy.yaml
+kubectl apply -f 3-nginx-deploy.yaml
+kubectl get deployments nginx-deployment -o wide
+kubectl get pod
+kubectl get replicasets
+kubectl scale deployment nginx-deployment --replicas=6
+cat 3-nginx-deploy.yaml
+kubectl get replicasets
+kubectl get pod
+kubectl apply -f 3-nginx-deploy.yaml
+kubectl delete pod 파드이름 #지웠을때 개수 확인
+kubectl get pod
+
+# 다음 실습을 위해 삭제
+kubectl delete deployments nginx-deployment
+
+## Rolling Update
+#1.16 nginx 이미지로 생성
+kubectl create deployment mynginx --image=nginx:1.16-alpine
+
+# 위 명령어로 생성된 상태 확인
+kubectl get deployments,replicasets,pods -l app=mynginx
+
+# 파드 늘려보고, 늘어난 파드 확인
+kubectl scale deployment mynginx --replicas=3
+
+# 롤아웃 히스토리 확인 (같은 어플리케이션 버젼만 늘려서 아직 revision이 특별히 없음)
+kubectl rollout history deployment mynginx
+
+# revision1만 자세히 보고 싶으면 뒤에 옵션 추가
+kubectl rollout history deployment mynginx --revision=1
+
+# Strategy Type으로 rolling update 방식 확인
+kubectl describe deployment mynginx
+
+# 롤링 업데이트
+kubectl set image deployment mynginx nginx=nginx:1.17-alpine
+
+# 롤링 업데이트 후, 롤아웃 히스토리 다시 확인 및 자세히 확인
+kubectl rollout history deployment mynginx
+kubectl rollout history deployment mynginx --revision=2
+
+# 업그레이드 하면서 모두 새로 만들어졌고, 기존 리플리카셋은 더이상 쓰이지 않음
+kubectl get deployments,replicasets,pods -l app=mynginx -A
+
+# 기존 버젼으로 다운그레이드
+kubectl rollout undo deployment mynginx --to-revision=1
+
+# 빠르게 아까 봤던거 다시 확인, 빠르게 파드가 생성되고 기존껀 지워짐
+kubectl get deployments,replicasets,pods -l app=mynginx -A
+
+# 히스토리 확인
+kubectl rollout history deployment mynginx
+
+# 원복
+kubectl delete deployment mynginx
