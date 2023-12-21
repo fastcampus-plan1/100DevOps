@@ -56,3 +56,111 @@ kubectl rollout history deployment mynginx
 
 # 원복
 kubectl delete deployment mynginx
+
+
+### NameSpace
+# 네임 스페이스는 동일한 쿠버네티스 클러스터를 기반으로 하는, 여러 가상 클러스터를 의미
+# 네임 스페이스 확인
+kubectl get pods -A
+
+# 네임 스페이스 생성
+kubectl create namespace fastcampus
+kubectl run k8s --image=nginx --namespace=fastcampus
+
+# 생성한 파드 확인
+kubectl get pods
+kubectl get pods -n fastcampus
+
+# 원복
+kubectl delete pod k8s -n fastcampus
+kubectl delete namespace fastcampus
+
+
+### MultiContainer Pod
+kubectl apply -f multi-container.yaml
+# 첫번째 컨테이너에 hello-k8s 파일 생성
+kubectl exec -it test-pd -c test-container -- /bin/sh
+cd /
+ls
+cd /cache
+touch hello-k8s
+ls
+exit
+
+# 두번째 컨테이너도 동일한 볼륨을 공유하고 있기에, 생성된 파일이 보임
+kubectl exec -it test-pd -c side-car -- /bin/sh
+cd /
+ls
+cd /cache
+ls
+exit
+
+# 실습 완료시 삭제
+kubectl delete pod test-pd
+
+
+### Init Container
+# init container 생성하는 YAML
+# init continaer 내 command : mydb와 myservice가 확인되기 전까지 init 컨테이너 지속 유지됨
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+  labels:
+    app.kubernetes.io/name: MyApp
+spec:
+  containers:
+  - name: myapp-container
+    image: busybox:1.28
+    command: ['sh', '-c', 'echo The app is running! && sleep 3600']
+  initContainers:
+  - name: init-myservice
+    image: busybox:1.28
+    command: ['sh', '-c', "until nslookup myservice.default.svc.cluster.local; do echo waiting for myservice; sleep 2; done"]
+  - name: init-mydb
+    image: busybox:1.28
+    command: ['sh', '-c', "until nslookup mydb.default.svc.cluster.local; do echo waiting for mydb; sleep 2; done"]
+EOF
+
+# Pending으로 실행되지 않음을 볼 수 있음. 서비스가 있어야 하기 때문
+kubectl get pod myapp-pod
+kubectl logs myapp-pod -c init-myservice # Inspect the first init container
+kubectl logs myapp-pod -c init-mydb      # Inspect the second init container
+
+# myservice 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: myservice
+spec:
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 9376
+EOF
+
+#mydb 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: mydb
+spec:
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 9377
+EOF
+
+
+# 정상 확인
+kubectl get pod myapp-pod
+kubectl logs myapp-pod -c init-myservice # Inspect the first init container
+kubectl logs myapp-pod -c init-mydb      # Inspect the second init container
+
+# 삭제
+kubectl delete pod myapp-pod
+kubectl delete service mydb
+kubectl delete service myservice
