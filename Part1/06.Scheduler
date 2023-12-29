@@ -1,0 +1,217 @@
+### Node Selector
+
+# 노드 레이블 확인
+kubectl get node --show-labels
+# 노드에 레이블 설정
+kubectl label node worker1 disktype=ssd
+# 아래 yaml apply
+kubectl apply -f https://k8s.io/examples/pods/pod-nginx.yaml
+
+# 파드 배포 노드 확인, nginx는 worker1에 배포되어 있을 것임
+kubectl get pod -o wide
+kubectl describe pod nginx | grep disktype
+kubectl get node --show-labels | grep disktype
+
+
+# 원복
+kubectl delete pod nginx
+kubectl label node worker1 disktype-
+
+
+### Node Affinity
+# 노드 레이블 확인
+kubectl get node --show-labels
+# 노드에 레이블 설정
+kubectl label node worker1 location_zone=antarctica-east1
+kubectl label node worker2 location_zone=antarctica-west1
+kubectl label node worker2 another-node-label-key=another-node-label-value
+# 아래 yaml apply
+
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: with-node-affinity
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: location_zone
+            operator: In
+            values:
+            - antarctica-east1
+            - antarctica-west1
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 1
+        preference:
+          matchExpressions:
+          - key: another-node-label-key
+            operator: In
+            values:
+            - another-node-label-value
+  containers:
+  - name: with-node-affinity
+    image: registry.k8s.io/pause:2.0
+EOF
+
+
+# 파드 배포 노드 확인, 아래 yaml 과 확인
+kubectl get pod -o wide
+
+# 다음 실습을 위해 삭제
+kubectl delete pod with-node-affinity
+kubectl label node worker1 location_zone-
+kubectl label node worker2 location_zone-
+kubectl label node worker2 another-node-label-key-
+
+
+#### Taint & Toleration
+# 기 설정된 Taint 확인
+kubectl describe node | grep -i taint
+
+# 노드에 Taint 설정 (키는 example-key, 값은 value1, Effect는 Noschedule)
+kubectl taint nodes worker1 example-key=value1:NoSchedule
+kubectl taint nodes worker2 example-key=value1:NoSchedule
+
+# 파드 실행 및 확인
+kubectl run pod1 --image=nginx
+kubectl run pod2 --image=nginx
+kubectl run pod3 --image=nginx
+kubectl get pod -o wide
+
+# Toleration 이 있는 nginx 파드 실행
+kubectl apply -f https://k8s.io/examples/pods/pod-with-toleration.yaml
+kubectl get pod -o wide
+
+# 다음 실습을 위해 노드에 생성한 파드 및 Taint 제거
+kubectl taint nodes worker1 example-key=value1:NoSchedule-
+kubectl taint nodes worker2 example-key=value1:NoSchedule-
+kubectl delete pod pod1 pod2 pod3
+kubectl delete pod nginx
+
+#참고. 상기 pod-with-toleration.yaml 내용
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  labels:
+    env: test
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    imagePullPolicy: IfNotPresent
+  tolerations:
+  - key: "example-key"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+
+
+#### Cordon & Drain
+export WORKER1=$(kubectl get nodes -o json | jq -r '.items[0].metadata.name')
+export WORKER2=$(kubectl get nodes -o json | jq -r '.items[1].metadata.name')
+export WORKER3=$(kubectl get nodes -o json | jq -r '.items[2].metadata.name')
+kubectl cordon ${WORKER1}
+kubectl cordon ${WORKER2}
+kubectl run --image=nginx pod1 
+kubectl run --image=nginx pod2 
+kubectl run --image=nginx pod3 
+kubectl get pod -o wide
+# 3번으로 몰림
+
+kubectl create deployment nginx-deployment --replicas=3 --image=nginx 
+kubectl get deployment nginx-deployment
+kubectl get pod -o wide
+# 마찬가지로 3번으로
+
+kubectl drain ${WORKER3}
+kubectl get pod -o wide
+# 아직 그대로임
+
+kubectl drain ${WORKER3} --ignore-daemonsets
+kubectl drain ${WORKER3} --ignore-daemonsets --delete-emptydir-data
+kubectl drain ${WORKER3} --ignore-daemonsets --delete-emptydir-data --force
+# 에러 발생, 사유는 PDB
+# 갈곳없는 Pod 안생기도록
+
+kubectl get poddisruptionbudget -A
+# 인위적인 작업으로 인한 장애 방지
+
+kubectl uncordon ${WORKER2}
+# 다시 한개 재구동 할 수 있게 바꿔놓고
+
+kubectl drain ${WORKER3} --ignore-daemonsets --delete-emptydir-data --force
+# 다시 드레인 시도
+
+kubectl get pod -o wide
+# deployment로 관리되고 있어야 살아남고, 단순 pod 구동은 사라짐
+
+# 원복
+kubectl uncordon ${WORKER1}
+kubectl uncordon ${WORKER3}
+kubectl delete deployment nginx-deployment
+
+
+
+#### Daemonset
+# Daemonset 관련 Yaml 파일 적용
+kubectl apply -f https://k8s.io/examples/controllers/daemonset.yaml
+kubectl get daemonset -n kube-system
+kubectl get pod -n kube-system -o wide
+
+# fluentd-elasticsearch가 각 노드마다 구성됨을 확인할 수 있음
+
+# 다음 실습을 위해 삭제
+kubectl delete daemonset fluentd-elasticsearch -n kube-system
+
+# 상기 yaml 파일 내용 복붙
+apiVersion: apps/v1 
+kind: DaemonSet     
+metadata:           
+  name: fluentd-elasticsearch
+  namespace: kube-system
+  labels:
+    k8s-app: fluentd-logging
+spec:
+  selector:
+    matchLabels:
+      name: fluentd-elasticsearch
+  template:
+    metadata:
+      labels:
+        name: fluentd-elasticsearch
+    spec:
+      tolerations:
+      # this toleration is to have the daemonset runnable on master nodes
+      # remove it if your masters can't run pods
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: fluentd-elasticsearch
+        image: quay.io/fluentd_elasticsearch/fluentd:v2.5.2
+        resources:
+          limits:
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 200Mi
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+
+
