@@ -1,0 +1,341 @@
+### Configmap 생성
+kubectl apply -f https://k8s.io/examples/application/mysql/mysql-configmap.yaml
+kubectl get configmap
+
+# 아래 참고
+# my.cnf의 일부분을 덮어쓰기 할 예정
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+    app.kubernetes.io/name: mysql
+data:
+  primary.cnf: |
+    [mysqld] #Primary 에 적용할 config
+    log-bin    
+  replica.cnf: |
+    [mysqld] #Replica에 적용할 config
+    super-read-only
+
+### Service 생성
+kubectl apply -f https://k8s.io/examples/application/mysql/mysql-services.yaml
+kubectl get svc
+
+# 아래 참고
+# StatefulSet을 위한 Headless 서비스인 mysql 생성
+# Write를 원할 경우 Primary 파드인 mysql-0.mysql.를 활용
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+    app.kubernetes.io/name: mysql
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+  clusterIP: None #headless를 의미
+  selector:
+    app: mysql
+---
+# Read를 원할 경우 어떤 파드에서든 가능하며, read를 위한 일반적인 서비스 생성
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-read
+  labels:
+    app: mysql
+    app.kubernetes.io/name: mysql
+    readonly: "true"
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+  selector:
+    app: mysql
+
+
+### CSI 사전 설정 관련
+# AWS IAM, OIDC(OpenID Connect) 프로바이더 설정
+eksctl utils associate-iam-oidc-provider --region ap-northeast-2 --cluster=my-eks --approve
+
+# AWS EBS CSI Driver에 대한 IAM 역할 부여
+eksctl create iamserviceaccount \
+  --name ebs-csi-controller-sa \
+  --namespace kube-system \
+  --cluster my-eks \
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+  --approve \
+  --role-only \
+  --role-name AmazonEKS_EBS_CSI_DriverRole
+
+# 설치과정에 각자의 ID를 필요로 하므로 확인
+aws sts get-caller-identity
+
+# CSI Driver 를 addon으로 설치
+eksctl create addon --name aws-ebs-csi-driver --cluster my-eks --service-account-role-arn arn:aws:iam::111122223333:role/AmazonEKS_EBS_CSI_DriverRole --force
+
+
+##### Statefulset 생성
+# storage 설정 문제로 바로 사용 불가, kubectl apply -f https://k8s.io/examples/application/mysql/mysql-statefulset.yaml
+
+# aws eks에 기 설정된 storage class 확인
+kubectl get storageclass
+
+kubectl apply -f statefulset-mysql.yaml
+
+# cat statefulset-mysql.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  selector:
+    matchLabels:
+      app: mysql
+      app.kubernetes.io/name: mysql
+  serviceName: mysql
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: mysql
+        app.kubernetes.io/name: mysql
+    spec:
+      initContainers:
+      - name: init-mysql #몇번째 파드인지 인식하고, pod내에서 활용할 볼륨 사전 세팅
+        image: mysql:5.7
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          # mysql server-id를 만들기 위해 (호스트네임으로 반환되는) pod가 생성되는 index 순서를 활용
+          [[ $HOSTNAME =~ -([0-9]+)$ ]] || exit 1
+          ordinal=${BASH_REMATCH[1]}
+          echo [mysqld] > /mnt/conf.d/server-id.cnf
+          # 이미 사용된 server-id=0을 사용하는 것을 방지하기 위해 100을 추가 삽입
+          echo server-id=$((100 + $ordinal)) >> /mnt/conf.d/server-id.cnf
+          # 위에서 만든 configmap으로 부터 데이터를 가져와서 conf.d에 추가 
+          if [[ $ordinal -eq 0 ]]; then
+            cp /mnt/config-map/primary.cnf /mnt/conf.d/
+          else
+            cp /mnt/config-map/replica.cnf /mnt/conf.d/
+          fi          
+        volumeMounts:
+        - name: conf
+          mountPath: /mnt/conf.d
+        - name: config-map
+          mountPath: /mnt/config-map
+      - name: clone-mysql #내가 몇번째 파드인지 인식했으면 primary인지 클론인지 수행
+        image: gcr.io/google-samples/xtrabackup:1.0
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          # 데이터가 이미 있으면 복제 스킵
+          [[ -d /var/lib/mysql/mysql ]] && exit 0
+          # index가 0인 primary라면 복제를 스킵
+          [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+          ordinal=${BASH_REMATCH[1]}
+          [[ $ordinal -eq 0 ]] && exit 0
+          # 데이터 복제는 앞의 파드로부터 할것임(모두가 첫번째 파드만 바라보면 성능 저하)
+          ncat --recv-only mysql-$(($ordinal-1)).mysql 3307 | xbstream -x -C /var/lib/mysql
+          # 백업 준비
+          xtrabackup --prepare --target-dir=/var/lib/mysql          
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+      containers: #이제 본격적인 컨테이너
+      - name: mysql #개별 파드의 첫번째 컨테이너인 mysql 컨테이너
+        image: mysql:5.7
+        env:
+        - name: MYSQL_ALLOW_EMPTY_PASSWORD
+          value: "1"
+        ports:
+        - name: mysql
+          containerPort: 3306
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          exec:
+            command: ["mysqladmin", "ping"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            # TCP 상에서 쿼리를 실행할 수 있는지 확인(skip-networking은 off).
+            command: ["mysql", "-h", "127.0.0.1", "-e", "SELECT 1"]
+          initialDelaySeconds: 5
+          periodSeconds: 2
+          timeoutSeconds: 1
+      - name: xtrabackup #개별 파드의 두번째 컨테이너(사이드카)인 xtrabackup
+        image: gcr.io/google-samples/xtrabackup:1.0
+        ports:
+        - name: xtrabackup
+          containerPort: 3307
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          cd /var/lib/mysql
+
+          # 복제된 데이터의 binlog 위치를 확인.
+          if [[ -f xtrabackup_slave_info && "x$(<xtrabackup_slave_info)" != "x" ]]; then
+            # XtraBackup은 기존 레플리카에서 복제하기 때문에
+            # 일부 "CHANGE MASTER TO" 쿼리는 이미 생성했음. (테일링 세미콜론을 제거해야 한다!)
+            cat xtrabackup_slave_info | sed -E 's/;$//g' > change_master_to.sql.in
+            # 이 경우에는 xtrabackup_binlog_info는 무시(info 필요없음).
+            rm -f xtrabackup_slave_info xtrabackup_binlog_info
+          elif [[ -f xtrabackup_binlog_info ]]; then
+            # Primary로부터 직접 복제함. binlog 위치를 파싱.
+            [[ `cat xtrabackup_binlog_info` =~ ^(.*?)[[:space:]]+(.*?)$ ]] || exit 1
+            rm -f xtrabackup_binlog_info xtrabackup_slave_info
+            echo "CHANGE MASTER TO MASTER_LOG_FILE='${BASH_REMATCH[1]}',\
+                  MASTER_LOG_POS=${BASH_REMATCH[2]}" > change_master_to.sql.in
+          fi
+
+          # Replication을 시작하여 복제를 완료해야 하는지 확인.
+          if [[ -f change_master_to.sql.in ]]; then 
+            echo "Waiting for mysqld to be ready (accepting connections)"
+            until mysql -h 127.0.0.1 -e "SELECT 1"; do sleep 1; done
+
+           #StatefulSet 이므로 특정 pod(primary pod)를 dns로 확인 가능
+            echo "Initializing replication from clone position"
+            mysql -h 127.0.0.1 \
+                  -e "$(<change_master_to.sql.in), \
+                          MASTER_HOST='mysql-0.mysql', \
+                          MASTER_USER='root', \
+                          MASTER_PASSWORD='', \
+                          MASTER_CONNECT_RETRY=10; \
+                        START SLAVE;" || exit 1
+            # 컨테이너가 다시 시작하는 경우, 이 작업을 한번만 시도한다.
+            mv change_master_to.sql.in change_master_to.sql.orig
+          fi
+
+          # 피어가 요청할 때 서버를 시작하여 백업을 보냄.
+          exec ncat --listen --keep-open --send-only --max-conns=1 3307 -c \
+            "xtrabackup --backup --slave-info --stream=xbstream --host=127.0.0.1 --user=root"          
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+      volumes:
+      - name: conf
+        emptyDir: {}
+      - name: config-map
+        configMap:
+          name: mysql
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp2 #aws eks에 기 설정된 dynamic storage class 활용
+      resources:
+        requests:
+          storage: 10Gi
+
+
+
+### 생성 확인
+kubectl get statefulset
+kubectl get pod
+
+## DB Insert
+kubectl run mysql-client --image=mysql:5.7 -i --rm --restart=Never --\
+  mysql -h mysql-0.mysql <<EOF
+CREATE DATABASE test;
+CREATE TABLE test.messages (message VARCHAR(250));
+INSERT INTO test.messages VALUES ('hello');
+EOF
+
+
+## DB Read
+# mysql-read 라는 서비스에 insert한 내용 확인 가능
+kubectl run mysql-client --image=mysql:5.7 -i -t --rm --restart=Never --\
+  mysql -h mysql-read -e "SELECT * FROM test.messages"
+
+# 어떤 엔드포인트로 연결되는지 확인 가능, 이 창은 잠시 띄워두어도 좋습니다.
+kubectl run mysql-client-loop --image=mysql:5.7 -i -t --rm --restart=Never --\
+  bash -ic "while sleep 1; do mysql -h mysql-read -e 'SELECT @@server_id,NOW()'; done"
+
+
+### Pod 삭제 테스트
+kubectl delete pod mysql-2
+kubectl get pod
+kubectl delete pod mysql-1
+kubectl get pod
+kubectl delete pod mysql-0
+kubectl get pod
+
+# 쿼리 가능한지 확인
+kubectl run mysql-client --image=mysql:5.7 -i -t --rm --restart=Never --\
+  mysql -h mysql-read -e "SELECT * FROM test.messages"
+
+# 삽입 가능한지 확인
+kubectl run mysql-client --image=mysql:5.7 -i --rm --restart=Never --\
+  mysql -h mysql-0.mysql <<EOF
+INSERT INTO test.messages VALUES ('hello2');
+EOF
+
+kubectl run mysql-client --image=mysql:5.7 -i -t --rm --restart=Never --\
+  mysql -h mysql-read -e "SELECT * FROM test.messages"
+
+# pv 확인
+kubectl get pv
+
+
+### Pod 증설
+kubectl scale statefulset mysql  --replicas=5
+
+# 확인
+kubectl get pods -l app=mysql --watch
+
+# 다섯번째 파드에 질의
+kubectl run mysql-client --image=mysql:5.7 -i -t --rm --restart=Never --\
+  mysql -h mysql-4.mysql -e "SELECT * FROM test.messages"
+
+
+
+### Pod 감설
+kubectl scale statefulset mysql --replicas=3
+
+# 확인
+kubectl get pods -l app=mysql --watch
+
+# PV 및 PVC 확인, PV는 그대로 존재
+kubectl get pv
+kubectl get pvc
+
+
+
+### 원복
+# 개별 Pod 단위 삭제가 아닌 statefulset으로 삭제
+kubectl delete statefulset mysql
+
+# 나머지 삭제
+kubectl delete configmap,service,pvc -l app=mysql
