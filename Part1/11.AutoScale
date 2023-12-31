@@ -1,0 +1,257 @@
+### 사전 준비(메트릭서버 설치, 기 진행했었다면 패스)
+
+# 메트릭서버 설치
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+kubectl edit deploy -n kube-system metrics-server
+(:set number)
+# (1) 인증 관련 추가 설정
+# spec.containers.args[].--kubelet-insecure-tls 추가
+
+# (2) host network 관련 추가 설정. 띄어쓰기 주의
+# hostNetwork: true 추가
+
+(참고, 숫자는 행 번호)
+ 37     spec:
+ 38       containers:
+ 39       - args:
+ 40         - --cert-dir=/tmp
+ 41         - --secure-port=4443
+ 42         - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+ 43         - --kubelet-use-node-status-port
+ 44         - --metric-resolution=15s
+ 45         - --kubelet-insecure-tls
+ 46         image: k8s.gcr.io/metrics-server/metrics-server:v0.6.1
+ 47         imagePullPolicy: IfNotPresent
+ 48         livenessProbe:
+ 49           failureThreshold: 3
+ 50           httpGet:
+ 51             path: /livez
+ 52             port: https
+ 53             scheme: HTTPS
+ 54           periodSeconds: 10
+ 55           successThreshold: 1
+ 56           timeoutSeconds: 1
+ 57         name: metrics-server
+ 58         ports:
+ 59         - containerPort: 4443
+ 60           hostPort: 4443
+ 61           name: https
+ 62           protocol: TCP
+ 63         readinessProbe:
+ 64           failureThreshold: 3
+ 65           httpGet:
+ 66             path: /readyz
+ 67             port: https
+ 68             scheme: HTTPS
+ 69           initialDelaySeconds: 20
+ 70           periodSeconds: 10
+ 71           successThreshold: 1
+ 72           timeoutSeconds: 1
+ 73         resources:
+ 74           requests:
+ 75             cpu: 100m
+ 76             memory: 200Mi
+ 77         securityContext:
+ 78           allowPrivilegeEscalation: false
+ 79           readOnlyRootFilesystem: true
+ 80           runAsNonRoot: true
+ 81           runAsUser: 1000
+ 82         terminationMessagePath: /dev/termination-log
+ 83         terminationMessagePolicy: File
+ 84         volumeMounts:
+ 85         - mountPath: /tmp
+ 86           name: tmp-dir
+ 87       dnsPolicy: ClusterFirst
+ 88       hostNetwork: true
+ 89       nodeSelector:
+ 90         kubernetes.io/os: linux
+
+
+ ### HPA 실습을 위한 Deployment, Service 배포
+ kubectl apply -f https://k8s.io/examples/application/php-apache.yaml
+
+#내용 확인
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-apache
+spec:
+  selector:
+    matchLabels:
+      run: php-apache
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        run: php-apache
+    spec:
+      containers:
+      - name: php-apache
+        image: k8s.gcr.io/hpa-example
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: 500m
+          requests:
+            cpu: 200m
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: php-apache
+  labels:
+    run: php-apache
+spec:
+  ports:
+  - port: 80
+  selector:
+    run: php-apache
+
+
+### AutoScaler 생성
+kubectl autoscale deployment php-apache --cpu-percent=50 --min=1 --max=10
+
+# "hpa" 또는 "horizontalpodautoscaler" 둘 다 사용 가능
+kubectl get hpa
+
+
+### 부하 생성
+kubectl get hpa
+kubectl get deployment php-apache
+kubectl get svc
+
+# 부하 생성을 유지하면서 나머지 스텝을 수행할 수 있도록,
+# 다음의 명령을 별도의 터미널에서 실행한다. (ssh 접속을 한번 더!)
+kubectl run -it --rm load-generator --image=busybox -- /bin/sh
+while true; do wget -q -O- http://php-apache; done
+
+
+## AutoScale 확인
+kubectl get hpa
+kubectl get deployment php-apache
+
+
+## 실습 종료, Scale-in
+CTRL + C 눌러서 로드밸런서 종료
+바로 pod가 지워지지 않고 약 5분정도 지나면 자동 Scale-In
+
+# 아래 참고
+root@master1:~# kubectl get hpa
+NAME         REFERENCE               TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+php-apache   Deployment/php-apache   0%/50%    1         10        10         15m
+root@master1:~# 
+root@master1:~# kubectl get hpa
+NAME         REFERENCE               TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+php-apache   Deployment/php-apache   0%/50%    1         10        1          16m
+root@master1:~#
+
+
+
+### 원복
+kubectl delete deployment php-apache
+kubectl delete svc php-apache
+kubectl delete hpa php-apache
+kubectl delete pod load-generator
+
+
+#### VPA 관련 사전 설치
+### https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler#installation
+## CRD의 정의와 RBAC 업데이트
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/vpa-rbac.yaml
+
+### VPA Clone
+#클라우드쉘 용량부족으로 인해 루트로 이동후 클론 바람(약 900MB 필요)
+cd /
+sudo git clone https://github.com/kubernetes/autoscaler.git
+./autoscaler/vertical-pod-autoscaler/hack/vpa-up.sh
+
+### VPA 구성, 실습
+
+cd /autoscaler/vertical-pod-autoscaler/examples
+cat hamster.yaml
+
+kubectl apply -f hamster.yaml
+
+kubectl get pod
+
+kubectl get vpa
+[cloudshell-user@ip-10-4-111-113 examples]$ kubectl get vpa
+NAME          MODE   CPU    MEM       PROVIDED   AGE
+hamster-vpa   Auto   100m   262144k   True       9m12s
+
+
+kubectl get pod
+kubectl get deployment hamster
+
+kubectl delete -f hamster.yaml
+kubectl delete -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
+kubectl delete -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/vpa-rbac.yaml
+
+
+(참고)
+[cloudshell-user@ip-10-4-111-113 examples]$ cat hamster.yaml
+# This config creates a deployment with two pods, each requesting 100 millicores
+# and trying to utilize slightly above 500 millicores (repeatedly using CPU for
+# 0.5s and sleeping 0.5s).
+# It also creates a corresponding Vertical Pod Autoscaler that adjusts the
+# requests.
+# Note that the update mode is left unset, so it defaults to "Auto" mode.
+---
+apiVersion: "autoscaling.k8s.io/v1"
+kind: VerticalPodAutoscaler
+metadata:
+  name: hamster-vpa
+spec:
+  # recommenders field can be unset when using the default recommender.
+  # When using an alternative recommender, the alternative recommender's name
+  # can be specified as the following in a list.
+  # recommenders: 
+  #   - name: 'alternative'
+  targetRef:
+    apiVersion: "apps/v1"
+    kind: Deployment
+    name: hamster
+  resourcePolicy:
+    containerPolicies:
+      - containerName: '*'
+        minAllowed:
+          cpu: 100m
+          memory: 50Mi
+        maxAllowed:
+          cpu: 1
+          memory: 500Mi
+        controlledResources: ["cpu", "memory"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hamster
+spec:
+  selector:
+    matchLabels:
+      app: hamster
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: hamster
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+      containers:
+        - name: hamster
+          image: registry.k8s.io/ubuntu-slim:0.1
+          resources:
+            requests:
+              cpu: 100m
+              memory: 50Mi
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - "while true; do timeout 0.5s yes >/dev/null; sleep 0.5s; done"
