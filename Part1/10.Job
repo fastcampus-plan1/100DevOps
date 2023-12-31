@@ -1,0 +1,165 @@
+### Job
+  kubectl apply -f https://kubernetes.io/examples/controllers/job.yaml
+kubectl get pod
+
+# 3.141592... 확인하기
+kubectl logs 파드이름(job)
+
+# 원복
+kubectl delete job pi
+
+# yaml 내용
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi
+spec:
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl:5.34.0
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"] 
+      restartPolicy: Never # 컨테이너를 재시작하지 않음
+  backoffLimit: 4 # 재시작 정책 (4분 내 지수적 시간 기다리며 파드 재시도)
+
+# 참고
+- spec.jobTemplate.spec.backOffLimit : 디폴트 값은 6이며, 10초, 20초, 40초…로 증가
+- spec.jobTemplate.spec.template.spec.restartPolicy
+    - Always: 항상 컨테이너를 재시작. 정상 종료(zero exit code)이더라도 재시작
+    - OnFailure: 비정상 종료(non-zero exit code)시 재시작
+        - backoff limit 에 도달하면 job을 실행 중인 파드가 종료되어 디버깅 어려움
+    - Never: 컨테이너를 재시작하지 않음 (권장)
+
+### 병렬 job 실행
+cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi-parallelism
+spec:
+  completions: 5 # 총 실행 횟수
+  parallelism: 2 # 동시 실행 가능한 파드 개수
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl:5.34.0
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"] 
+      restartPolicy: Never
+  backoffLimit: 4
+EOF
+
+kubectl get pod # 여러번 확인
+
+#원복
+kubectl get job
+kubectl delete job pi-parallelism
+kubectl get pod
+
+
+### Crontab
+(참고) Crontab : 특정 시간에 특정 작업을 정기적으로 반복 수행
+# systemctl status crond
+# vi /etc/crontab
+# crontab -e
+*/1 * * * * date >> ~/date.log
+# crontab -l
+# tail -f date.log
+
+
+### Cronjob
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/website/main/content/ko/examples/application/job/cronjob.yaml
+
+# 내용 확인
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hello
+spec:
+  schedule: "* * * * *" #1분마다
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: hello
+            image: busybox:1.28
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - date; echo Hello from the Kubernetes cluster #컨테이너 내에서 헬로~
+          restartPolicy: OnFailure
+
+
+kubectl get cronjob
+kubectl get pod
+kubectl logs 해당 파드 이름
+kubectl delete cronjob hello
+
+
+### activeDeadlineSeconds 활용
+cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi-with-timeout
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 5 #5초 이후 삭제, 완료여부에 상관없이 삭제
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl:5.34.0
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+      restartPolicy: Never
+EOF
+
+kubectl get job
+kubectl get pod
+
+
+### TTL 활용
+cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi-with-ttl
+spec:
+  ttlSecondsAfterFinished: 10 #완료 이후, 10초 되면 삭제
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl:5.34.0
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+      restartPolicy: Never
+EOF
+
+
+### Suspend Job
+cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi-with-suspend
+spec:
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl:5.34.0
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(99999999)"]
+      restartPolicy: Never
+EOF
+
+kubectl get pod
+kubectl get job
+
+kubectl patch job/pi-with-suspend --type=strategic --patch '{"spec":{"suspend":true}}'
+kubectl describe job pi-with-suspend
+kubectl patch job/pi-with-suspend --type=strategic --patch '{"spec":{"suspend":false}}'
+kubectl describe job pi-with-suspend
+kubectl delete job pi-with-suspend
