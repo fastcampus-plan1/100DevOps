@@ -1,0 +1,149 @@
+### Ingress Controller 생성
+## IAM 정책생성
+curl -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.5.4/docs/install/iam_policy.json
+
+aws iam create-policy \
+    --policy-name AWSLoadBalancerControllerIAMPolicy \
+    --policy-document file://iam_policy.json
+
+## IAM 역할생성
+aws sts get-caller-identity
+
+eksctl create iamserviceaccount \
+  --cluster=my-eks \
+  --namespace=kube-system \
+  --name=aws-load-balancer-controller \
+  --role-name AmazonEKSLoadBalancerControllerRole \
+  --attach-policy-arn=arn:aws:iam::111122223333:policy/AWSLoadBalancerControllerIAMPolicy \
+  --approve
+
+## HELM 통해서 설치
+#(만약) Helm 설치가 아직 안되었다면,
+curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 > get_helm.sh
+chmod 700 get_helm.sh
+./get_helm.sh
+
+# Repository 추가
+helm repo add eks https://aws.github.io/eks-charts
+
+# 레포지토리 업데이트
+helm repo update eks
+
+# AWS LoadBalancer Contoller 설치
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=my-eks \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller
+
+
+# 설치확인
+kubectl get deployment -n kube-system aws-load-balancer-controller
+
+### Deployment, Service 생성
+## Deployment 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-2048
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app-2048
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: app-2048
+    spec:
+      containers:
+      - image: public.ecr.aws/l6m2t8p7/docker-2048:latest
+        imagePullPolicy: Always
+        name: app-2048
+        ports:
+        - containerPort: 80
+EOF
+
+## Service 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-2048
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
+      protocol: TCP
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: app-2048
+EOF
+
+## Ingress 생성 (Instance모드)
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-2048-instance
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: instance
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service:
+              name: service-2048
+              port:
+                number: 80
+EOF
+
+## 생성확인
+kubectl get ingress
+
+## 노드 접속해서 iptables 확인
+sudo iptables -v --numeric --table nat --list PREROUTING;
+sudo iptables -v --numeric --table nat --list KUBE-SERVICES;
+sudo iptables -v --numeric --table nat --list KUBE-NODEPORTS;
+sudo iptables -v --numeric --table nat --list KUBE-EXT~;
+sudo iptables -v --numeric --table nat --list KUBE-SVC-~~;
+sudo iptables -v --numeric --table nat --list KUBE-SEP-~~~;
+
+
+# kubectl delete ingress ingress-2048-instance
+
+## IP 모드 ingress 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-2048-ip
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service:
+              name: service-2048
+              port:
+                number: 80
+EOF
+
+
+## 원복
+kubectl delete deployment-2048
+kubectl delete svc service-2048
+kubectl delete ingress-2048-ip
