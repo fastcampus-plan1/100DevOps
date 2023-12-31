@@ -1,0 +1,223 @@
+### Request, Limit 예제
+# https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#example-1
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: frontend
+spec:
+  containers:
+  - name: app
+    image: redis
+    resources:
+      requests: # 0.25 CPU와 64 MiB(226 바이트) 메모리 요청
+        memory: "64Mi"
+        cpu: "250m"
+      limits: # 0.5 CPU와 128 MiB 메모리 제한
+        memory: "128Mi"
+        cpu: "500m"
+  - name: log-aggregator
+    image: nginx
+    resources:
+      requests: # 위 컨테이너와 합쳐서, 파드는 (250+250) 0.5 CPU와 (64+64) 128 MiB 메모리 요청
+        memory: "64Mi"
+        cpu: "250m"
+      limits: # 위 컨테이너와 합쳐서, 파드는 (500+500) 1 CPU와 (128+128) 256 MiB 메모리 제한
+        memory: "128Mi"
+        cpu: "500m"
+EOF
+
+kubectl get pod
+kubectl describe pod frontend
+kubectl delete pod frontend
+
+
+### 메트릭서버 설치
+# 메트릭서버 설치
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+kubectl edit deploy -n kube-system metrics-server
+(:set number)
+# (1) 인증 관련 추가 설정
+# spec.containers.args[].--kubelet-insecure-tls 추가
+
+# (2) host network 관련 추가 설정. 띄어쓰기 주의
+# hostNetwork: true 추가
+
+(참고, 숫자는 행 번호)
+ 37     spec:
+ 38       containers:
+ 39       - args:
+ 40         - --cert-dir=/tmp
+ 41         - --secure-port=4443
+ 42         - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+ 43         - --kubelet-use-node-status-port
+ 44         - --metric-resolution=15s
+ 45         - --kubelet-insecure-tls
+ 46         image: k8s.gcr.io/metrics-server/metrics-server:v0.6.1
+ 47         imagePullPolicy: IfNotPresent
+ 48         livenessProbe:
+ 49           failureThreshold: 3
+ 50           httpGet:
+ 51             path: /livez
+ 52             port: https
+ 53             scheme: HTTPS
+ 54           periodSeconds: 10
+ 55           successThreshold: 1
+ 56           timeoutSeconds: 1
+ 57         name: metrics-server
+ 58         ports:
+ 59         - containerPort: 4443
+ 60           hostPort: 4443
+ 61           name: https
+ 62           protocol: TCP
+ 63         readinessProbe:
+ 64           failureThreshold: 3
+ 65           httpGet:
+ 66             path: /readyz
+ 67             port: https
+ 68             scheme: HTTPS
+ 69           initialDelaySeconds: 20
+ 70           periodSeconds: 10
+ 71           successThreshold: 1
+ 72           timeoutSeconds: 1
+ 73         resources:
+ 74           requests:
+ 75             cpu: 100m
+ 76             memory: 200Mi
+ 77         securityContext:
+ 78           allowPrivilegeEscalation: false
+ 79           readOnlyRootFilesystem: true
+ 80           runAsNonRoot: true
+ 81           runAsUser: 1000
+ 82         terminationMessagePath: /dev/termination-log
+ 83         terminationMessagePolicy: File
+ 84         volumeMounts:
+ 85         - mountPath: /tmp
+ 86           name: tmp-dir
+ 87       dnsPolicy: ClusterFirst
+ 88       hostNetwork: true
+ 89       nodeSelector:
+ 90         kubernetes.io/os: linux
+
+# cpu, mem 사용량 확인
+kubectl top pod frontend
+
+
+# 별도 터미널에서 부하 생성
+kubectl exec -it frontend -- bash
+apt update -y
+apt install stress -y
+stress --vm 2 --vm-bytes 32m -v --timeout 30s #프로세스 2개로, 메모리를 32m씩 할당 후 해제를 30초간 수행
+stress --vm 2 --vm-bytes 512m -v --timeout 30s #불가
+
+
+# 정리
+kubectl delete top frontend
+
+
+
+#### Limit Range 구성
+# 실습을 위한 별도 namespace 생성
+kubectl create namespace constraints-cpu-example
+
+# LimitRange 생성
+kubectl apply -f https://k8s.io/examples/admin/resource/cpu-constraints.yaml --namespace=constraints-cpu-example
+## 내용확인
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: cpu-min-max-demo-lr
+spec:
+  limits:
+  - max:
+      cpu: "800m"
+    min:
+      cpu: "200m"
+    type: Container
+
+# 생성한 limit range 확인
+kubectl get limitrange cpu-min-max-demo-lr --namespace=constraints-cpu-example
+kubectl describe limitrange cpu-min-max-demo-lr --namespace=constraints-cpu-example
+
+
+### Case.1 정상파드
+kubectl apply -f https://k8s.io/examples/admin/resource/cpu-constraints-pod.yaml --namespace=constraints-cpu-example
+kubectl get pod constraints-cpu-demo --namespace=constraints-cpu-example
+kubectl delete pod constraints-cpu-demo --namespace=constraints-cpu-example
+
+#1. yaml내용
+apiVersion: v1
+kind: Pod
+metadata:
+  name: constraints-cpu-demo
+spec:
+  containers:
+  - name: constraints-cpu-demo-ctr
+    image: nginx
+    resources:
+      limits:
+        cpu: "800m"
+      requests:
+        cpu: "500m"
+
+
+###2. 너무 많이 요구하는 파드
+kubectl apply -f https://k8s.io/examples/admin/resource/cpu-constraints-pod-2.yaml --namespace=constraints-cpu-example
+
+#2. yaml 내용
+apiVersion: v1
+kind: Pod
+metadata:
+  name: constraints-cpu-demo-2
+spec:
+  containers:
+  - name: constraints-cpu-demo-2-ctr
+    image: nginx
+    resources:
+      limits:
+        cpu: "1.5"
+      requests:
+        cpu: "500m"
+
+###3. 너무 조금 요구하는 파드
+kubectl apply -f https://k8s.io/examples/admin/resource/cpu-constraints-pod-3.yaml --namespace=constraints-cpu-example
+
+#위 명령 입력시 실패됨. Ruquest가 Limit Range의 min 보다도 작아서임
+#3. yaml내용
+apiVersion: v1
+kind: Pod
+metadata:
+  name: constraints-cpu-demo-3
+spec:
+  containers:
+  - name: constraints-cpu-demo-3-ctr
+    image: nginx
+    resources:
+      limits:
+        cpu: "800m"
+      requests:
+        cpu: "100m"
+
+
+###4. 아무것도 요청하지 않은 파드
+kubectl apply -f https://k8s.io/examples/admin/resource/cpu-constraints-pod-4.yaml --namespace=constraints-cpu-example
+
+# 상태확인. 리밋레인지로부터 CPU 요청량과 상한의 기본값을 적용하게 됨
+kubectl describe pod constraints-cpu-demo-4 --namespace=constraints-cpu-example
+
+kubectl delete pod constraints-cpu-demo-4 --namespace=constraints-cpu-example
+
+#4. yaml내용
+apiVersion: v1
+kind: Pod
+metadata:
+  name: constraints-cpu-demo-4
+spec:
+  containers:
+  - name: constraints-cpu-demo-4-ctr
+    image: vish/stress
+
+
+## 정리
+kubectl delete namespace constraints-cpu-example
