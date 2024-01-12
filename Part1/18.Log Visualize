@@ -1,0 +1,20 @@
+# Loki Setup
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+# loki 설치
+helm install loki grafana/loki --set loki.auth_enabled=false
+
+kubectl get svc
+
+# 수집기 설치
+helm upgrade --install fluent-bit grafana/fluent-bit \
+    --set loki.serviceName=loki-gateway.default.svc.cluster.local
+
+kubectl get ds
+
+# Loki Configuration in Grafana
+- GUI > Add new connection >
+    - Name : Loki
+    - URL : http://loki-gateway
+    - TLS 인증 skip
