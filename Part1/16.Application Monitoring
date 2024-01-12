@@ -1,0 +1,49 @@
+# Kube-Prometheus-stack 설치
+curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 > get_helm.sh
+chmod 700 get_helm.sh
+./get_helm.sh
+
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm pull prometheus-community/kube-prometheus-stack --version 55.5.0
+ls -lrt
+tar xvfz kube-prometheus-stack-55.5.0.tgz
+
+## Helm Chart 수정
+vi ~/kube-prometheus-stack/values.yaml
+1070   additionalDataSources:
+1071   - name: loki
+1072     type: loki
+1073     url: http://loki:3100
+1074     access: proxy
+1075     isDefault: false
+1076     editable: true
+
+1086   service:
+1087     portName: http-web
+1088     type: LoadBalancer
+
+3350     serviceMonitorSelectorNilUsesHelmValues: false 
+3373     podMonitorSelectorNilUsesHelmValues: false
+# true가 기본값인데 이걸 적어버리면 모니터링 대상으로 prometheus-operator와 동일한 릴리즈 태그로 ServiceMonitors, PodMonitors 가 붙여진 것만 인식
+# 즉, 모든 서비스 모니터라는 오브젝트마다 label에 프로메테우스라는 값을 넣어줘야 모니터링이 되어서 번거로움
+
+
+## Helm chart 활용하여 설치
+helm install prom prometheus-community/kube-prometheus-stack -f ~/kube-prometheus-stack/values.yaml 
+
+NAME: prom
+LAST DEPLOYED: Mon Oct 16 10:54:16 2023
+NAMESPACE: default
+STATUS: deployed
+REVISION: 1
+NOTES:
+kube-prometheus-stack has been installed. Check its status by running:
+  kubectl --namespace default get pods -l "release=prom"
+
+Visit https://github.com/prometheus-operator/kube-prometheus for instructions on how to create & configure Alertmanager and Prometheus instances using the Operator.
+
+## Grafana LB 접속이 안될경우
+#접속이 안된다면 앞서 ingress 실습에서 ALB를 설치했기 때문임. 
+#ALB를 쓰게 되면 annotation을 그에 맞게 설정해야 하는데, 설정보다는 원활한 진행을 위해 ALB를 제거
+helm uninstall aws-load-balancer-controller -n kube-system
