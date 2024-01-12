@@ -1,0 +1,20 @@
+kubectl apply -f https://k8s.io/examples/debug/counter-pod.yaml
+kubectl logs counter
+#실제 위치 (노드 접속 후)
+cd /var/log/pods/
+ll
+cd default_counter_블라블라
+ll -h
+
+## Anacron
+cat /etc/anacrontab
+cd /etc/cron.daily
+cat logrotate
+
+cat /etc/logrotate.conf
+# weekly : 주마다 로그 rotate 설정 
+# rorate 4: 4주간 로그 파일 보관
+# create : 로그파일을 로테이트 한 후에 빈 로그 파일 새로 생성
+# dateext : 날짜로 구분
+# compress : 로그파일 압축 하려면 사용
+# 어떤 파일을 로그 뜰것인지는 그 아래에 저장 및 /etc/logrotate.d 공간 활용
