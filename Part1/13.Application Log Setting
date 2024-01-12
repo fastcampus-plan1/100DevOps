@@ -1,0 +1,59 @@
+## nginx를 통한 로그 경로 확인
+kubectl run test --image=nginx
+kubectl logs test
+
+kubectl exec -it test -- /bin/bash
+curl localhost
+kubectl logs test
+
+cd /var/log/nginx
+ls -al
+  
+root@abc:/var/log/nginx# ls -al 
+### 일반적인 nginx의 로그 저장소, dockerfile에서 지정하여 dev/stdout으로 꺾음
+total 0
+drwxr-xr-x 1 root root  6 Dec 23 05:47 .
+drwxr-xr-x 1 root root 46 Dec 20 20:13 ..
+lrwxrwxrwx 1 root root 11 Dec 20 20:13 access.log -> /dev/stdout
+lrwxrwxrwx 1 root root 11 Dec 20 20:13 error.log -> /dev/stderr
+
+root@abc:/var/log/nginx# ls -al /dev/stdout  
+### 표준 출력장치. 현재 동작중인(1) fd의 1과 연결되어 있음
+
+lrwxrwxrwx 1 root root 15 Dec 21 11:23 /dev/stdout -> /proc/self/fd/1
+
+/proc/self : 현재 구동중인 PID를 의미함
+apt update -y
+apt install procps
+
+root@abc:/var/log/nginx# ls -al /proc/1/fd/1 ### 커널의 파이프로 보내게 되며, 쿠버네티스에서는 이 첫번째 
+l-wx------ 1 root root 64 Dec 21 11:23 /proc/1/fd/1 -> 'pipe:[2982495]'
+
+#참고1 : nginx 일반 리눅스 이미지의 도커파일
+https://hub.docker.com/_/nginx
+
+#참고2
+root@abc:/var/log/nginx# ls -al /proc/self/fd/1 ### 지금은 쉘에서 명령어를 실행하고 있기에 1번이라고 뜸
+lrwx------ 1 root root 64 Dec 23 12:01 /proc/self/fd/1 -> /dev/pts/1
+
+root@abc:/var/log/nginx# ls -al /dev/pts/1
+crw--w---- 1 root tty 136, 1 Dec 23 12:01 /dev/pts/1
+
+##### 경로 확인 후 실습
+
+#pod 내에서
+echo hello >> /proc/1/fd/1
+kubectl logs abc
+
+#pod 내에서
+ls dd
+ls dd 1>> /proc/1/fd/1
+kubectl logs abc
+#일반적으로 표준 입력은 fd 0로, 표준 출력은 fd 1로, 표준 에러는 fd 2로 할당됨
+
+# pod 내에서
+ls ee 2>> /proc/1/fd/2
+kubectl logs abc
+
+echo ff 1>> /proc/1/fd/1 2>> /proc/1/fd/2
+ls gg 1>> /proc/1/fd/1 2>> /proc/1/fd/2
