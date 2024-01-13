@@ -9,7 +9,7 @@ kubectl get svc
 
 # 수집기 설치
 helm upgrade --install fluent-bit grafana/fluent-bit \
-    --set loki.serviceName=loki-gateway.default.svc.cluster.local
+    --set loki.serviceName=loki-write.default.svc.cluster.local
 
 kubectl get ds
 
