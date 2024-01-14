@@ -1,6 +1,6 @@
 #!/bin/bash
 
-. function.sh
+. 27.function.sh
 
 BAR
 CODE [U-01] root 계정 원격 접속 제한
