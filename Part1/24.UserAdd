@@ -1,0 +1,34 @@
+cat > users.csv << 'EOF'
+psj,park seojun
+jhi,jung haein
+jkj,jin kijoo
+osk,oh seongkeun
+EOF
+
+### 사용자 생성
+bash << 'EOF' # 이런 방식을 here document라고 함
+#!/bin/bash 
+input="users.csv" #input 변수는 데이터파일
+while IFS=',' read -r loginname name 
+#while을 활용하여 반복하며, 개별 줄을 읽기 위해 read 명령어를 활용하고, 구분자는 쉼표
+do
+  echo "adding $loginname"
+  sudo useradd -c "$name" -m $loginname
+done < "$input"
+EOF
+
+### 확인
+cat /etc/passwd
+
+### 원복
+bash << 'EOF'
+#!/bin/bash
+ 
+input="users.csv" #input 변수는 데이터파일
+while IFS=',' read loginname name 
+#while을 활용하여 반복하며, 개별 줄을 읽기 위해 read 명령어를 입력, 이름을 읽기
+do
+  echo "delete $name"
+  sudo userdel "$loginname"
+done < "$input"
+EOF
